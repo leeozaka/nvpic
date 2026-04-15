@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Neovim/Vim temporary files
+*.swp
+*.swo
+*~
+.Session.vim
+
+# Lua coverage/test artifacts
+.luacov
+.luacov.*
+coverage.out
+
+# Local temporary folders
+tmp/
+tests/tmp/
+
+# Local environment files
+.env
+.env.*
+
+# Optional LuaRocks local installs
+.luarocks/
+lua_modules/
