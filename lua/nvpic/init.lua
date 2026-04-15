@@ -7,13 +7,48 @@ local M = {}
 
 local augroup = vim.api.nvim_create_augroup('nvpic', { clear = true })
 
-local function find_root()
-  local root = vim.fs.root(0, { '.git', '.nvpic' })
+---@param bufnr? number
+local function find_root(bufnr)
+  bufnr = bufnr or 0
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  local root = nil
+  if name ~= '' then
+    root = vim.fs.root(name, { '.git', '.nvpic' })
+  end
+  if not root and bufnr == 0 then
+    root = vim.fs.root(0, { '.git', '.nvpic' })
+  end
   return root or vim.fn.getcwd()
 end
 
-local function sync_root()
-  cache.set_root(find_root())
+---@param bufnr? number
+local function sync_root(bufnr)
+  cache.set_root(find_root(bufnr))
+end
+
+local function refresh_visible_active_buffers()
+  local ordered_wins = {}
+  local current_win = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_is_valid(current_win) then
+    table.insert(ordered_wins, current_win)
+  end
+  for _, winid in ipairs(vim.api.nvim_list_wins()) do
+    if winid ~= current_win then
+      table.insert(ordered_wins, winid)
+    end
+  end
+
+  local seen = {}
+  for _, winid in ipairs(ordered_wins) do
+    if vim.api.nvim_win_is_valid(winid) then
+      local bufnr = vim.api.nvim_win_get_buf(winid)
+      if not seen[bufnr] and renderer.is_active(bufnr) then
+        seen[bufnr] = true
+        sync_root(bufnr)
+        renderer.render_all(bufnr, winid)
+      end
+    end
+  end
 end
 
 ---@param opts? table
@@ -58,11 +93,11 @@ function M.setup(opts)
   end
 
   if cfg.auto_render then
-    vim.api.nvim_create_autocmd({ 'BufRead', 'BufEnter' }, {
+    vim.api.nvim_create_autocmd({ 'BufRead', 'BufEnter', 'WinEnter' }, {
       group = augroup,
       callback = function(ev)
-        sync_root()
-        renderer.render_all(ev.buf)
+        sync_root(ev.buf)
+        renderer.render_all(ev.buf, vim.api.nvim_get_current_win())
       end,
       desc = 'nvpic: auto-render images',
     })
@@ -84,6 +119,14 @@ function M.setup(opts)
       end
     end,
     desc = 'nvpic: debounced re-scan on edit',
+  })
+
+  vim.api.nvim_create_autocmd({ 'VimResized', 'WinResized', 'WinScrolled' }, {
+    group = augroup,
+    callback = function()
+      refresh_visible_active_buffers()
+    end,
+    desc = 'nvpic: refresh images on window changes',
   })
 
   if cfg.telescope then
@@ -122,8 +165,12 @@ end
 ---@param bufnr? number
 function M.refresh(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
-  sync_root()
-  renderer.render_all(bufnr)
+  sync_root(bufnr)
+  local winid = nil
+  if bufnr == vim.api.nvim_get_current_buf() then
+    winid = vim.api.nvim_get_current_win()
+  end
+  renderer.render_all(bufnr, winid)
 end
 
 ---@param bufnr? number

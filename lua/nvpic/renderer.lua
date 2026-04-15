@@ -79,23 +79,66 @@ end
 
 ---@param bufnr number
 ---@param block PicBlock
----@return number, number
-local function get_screen_anchor(bufnr, block)
-  local winid = vim.fn.bufwinid(bufnr)
+---@param winid? number
+---@return { row: number, col: number, available_cols: number, available_rows: number }|nil
+local function get_window_geometry(bufnr, block, winid)
+  winid = winid or vim.fn.bufwinid(bufnr)
   if winid == -1 then
-    return block.end_line, 0
+    return nil
   end
 
   local screen = vim.fn.screenpos(winid, block.end_line + 1, 1)
-  local row = tonumber(screen.row) or (block.end_line + 1)
-  local col = tonumber(screen.col) or 1
-  return math.max(row - 1, 0), math.max(col - 1, 0)
+  local row = tonumber(screen.row) or 0
+  local col = tonumber(screen.col) or 0
+  if row < 1 or col < 1 then
+    return nil
+  end
+
+  local info = vim.fn.getwininfo(winid)[1]
+  if not info then
+    return nil
+  end
+
+  local win_row = tonumber(info.winrow) or row
+  local win_col = tonumber(info.wincol) or col
+  local win_width = vim.api.nvim_win_get_width(winid)
+  local win_height = vim.api.nvim_win_get_height(winid)
+  if win_width < 1 or win_height < 1 then
+    return nil
+  end
+
+  local max_row = win_row + win_height - 1
+  local max_col = win_col + win_width - 1
+  if row > max_row or col > max_col then
+    return nil
+  end
+
+  return {
+    row = row - 1,
+    col = col - 1,
+    available_cols = math.max(max_col - col + 1, 1),
+    available_rows = math.max(max_row - row + 1, 1),
+  }
+end
+
+---@param block PicBlock
+---@param geometry { available_cols: number, available_rows: number }
+---@return number, number
+local function get_render_size(block, geometry)
+  local max_cols = math.floor(geometry.available_cols * 0.6)
+  local max_rows = math.floor(max_cols / 2)
+  local cols = math.floor(max_cols * block.scale)
+  local rows = math.floor(max_rows * block.scale)
+  cols = math.max(math.min(cols, geometry.available_cols), 1)
+  rows = math.max(math.min(rows, geometry.available_rows), 1)
+  return cols, rows
 end
 
 ---@param bufnr number
 ---@param block PicBlock
+---@param winid? number
 ---@return Placement|nil
-function M.render_block(bufnr, block)
+function M.render_block(bufnr, block, winid)
   local proto = protocol.get_active()
   if not proto then
     return nil
@@ -124,18 +167,17 @@ function M.render_block(bufnr, block)
     return nil
   end
 
-  local max_cols = math.floor(vim.o.columns * 0.6)
-  local max_rows = math.floor(max_cols / 2)
-  local cols = math.floor(max_cols * block.scale)
-  local rows = math.floor(max_rows * block.scale)
-  rows = math.max(rows, 1)
-  cols = math.max(cols, 1)
-  local screen_row, screen_col = get_screen_anchor(bufnr, block)
+  local geometry = get_window_geometry(bufnr, block, winid)
+  if not geometry then
+    return nil
+  end
+
+  local cols, rows = get_render_size(block, geometry)
 
   local placement_id = proto.render({
     image_path = abs_path,
-    row = screen_row,
-    col = screen_col,
+    row = geometry.row,
+    col = geometry.col,
     scale = block.scale,
     max_cols = cols,
     max_rows = rows,
@@ -168,7 +210,8 @@ function M.render_block(bufnr, block)
 end
 
 ---@param bufnr number
-function M.render_all(bufnr)
+---@param winid? number
+function M.render_all(bufnr, winid)
   M.clear(bufnr)
 
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -179,13 +222,15 @@ function M.render_all(bufnr)
     return
   end
 
+  buf_active[bufnr] = true
+
   local ts_diags = treesitter.validate(bufnr, blocks)
   if #ts_diags > 0 then
     vim.diagnostic.set(ns, bufnr, ts_diags)
   end
 
   for _, block in ipairs(blocks) do
-    M.render_block(bufnr, block)
+    M.render_block(bufnr, block, winid)
   end
 end
 

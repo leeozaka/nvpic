@@ -149,6 +149,39 @@ describe('nvpic (init)', function()
     assert.equals(#first, #second)
   end)
 
+  it('re-renders active buffers on window entry and geometry changes', function()
+    local calls = {}
+    unload_nvpic()
+    package.loaded['nvpic.renderer'] = {
+      toggle = function() end,
+      render_all = function(bufnr, winid)
+        table.insert(calls, { bufnr = bufnr, winid = winid })
+      end,
+      clear = function() end,
+      is_active = function(bufnr)
+        return bufnr == vim.api.nvim_get_current_buf()
+      end,
+    }
+    local nvpic = require('nvpic')
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buf)
+    nvpic.setup({ protocol = 'kitty' })
+    local current_win = vim.api.nvim_get_current_win()
+
+    vim.api.nvim_exec_autocmds('WinEnter', { buffer = buf })
+    vim.api.nvim_exec_autocmds('VimResized', {})
+    vim.api.nvim_exec_autocmds('WinResized', {})
+    vim.api.nvim_exec_autocmds('WinScrolled', {})
+
+    assert.same({
+      { bufnr = buf, winid = current_win },
+      { bufnr = buf, winid = current_win },
+      { bufnr = buf, winid = current_win },
+      { bufnr = buf, winid = current_win },
+    }, calls)
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
   it('paste() delegates to ui.float.open', function()
     local calls = 0
     unload_nvpic()

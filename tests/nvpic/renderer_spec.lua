@@ -20,6 +20,9 @@ describe('nvpic.renderer', function()
   local saved_get_active
   local saved_bufwinid
   local saved_screenpos
+  local saved_getwininfo
+  local saved_win_get_width
+  local saved_win_get_height
 
   before_each(function()
     config.reset()
@@ -28,12 +31,18 @@ describe('nvpic.renderer', function()
     saved_get_active = protocol.get_active
     saved_bufwinid = vim.fn.bufwinid
     saved_screenpos = vim.fn.screenpos
+    saved_getwininfo = vim.fn.getwininfo
+    saved_win_get_width = vim.api.nvim_win_get_width
+    saved_win_get_height = vim.api.nvim_win_get_height
   end)
 
   after_each(function()
     protocol.get_active = saved_get_active
     vim.fn.bufwinid = saved_bufwinid
     vim.fn.screenpos = saved_screenpos
+    vim.fn.getwininfo = saved_getwininfo
+    vim.api.nvim_win_get_width = saved_win_get_width
+    vim.api.nvim_win_get_height = saved_win_get_height
     renderer.clear(bufnr)
     if vim.api.nvim_buf_is_valid(bufnr) then
       vim.api.nvim_buf_delete(bufnr, { force = true })
@@ -90,6 +99,17 @@ describe('nvpic.renderer', function()
       vim.fn.screenpos = function(_, lnum, col)
         return { row = lnum + 10, col = col + 20 }
       end
+      vim.fn.getwininfo = function()
+        return {
+          { winrow = 11, wincol = 21 },
+        }
+      end
+      vim.api.nvim_win_get_width = function()
+        return 80
+      end
+      vim.api.nvim_win_get_height = function()
+        return 24
+      end
       protocol.get_active = function()
         return {
           name = 'stub',
@@ -124,6 +144,183 @@ describe('nvpic.renderer', function()
       local ns = vim.api.nvim_create_namespace('nvpic')
       local ext = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, placement.extmark_id, {})
       assert.is_not_nil(ext)
+    end)
+
+    it('bounds render size to the active window and matches spacer height', function()
+      local test_dir = vim.fn.tempname()
+      vim.fn.mkdir(test_dir .. '/pics', 'p')
+      cache.set_root(test_dir)
+      vim.fn.writefile({}, test_dir .. '/pics/exists.png')
+      local render_opts
+      vim.fn.bufwinid = function()
+        return 11
+      end
+      vim.fn.screenpos = function()
+        return { row = 12, col = 8 }
+      end
+      vim.fn.getwininfo = function()
+        return {
+          { winrow = 10, wincol = 5 },
+        }
+      end
+      vim.api.nvim_win_get_width = function()
+        return 20
+      end
+      vim.api.nvim_win_get_height = function()
+        return 7
+      end
+      protocol.get_active = function()
+        return {
+          name = 'stub',
+          detect = function()
+            return true
+          end,
+          render = function(opts)
+            render_opts = opts
+            return '84'
+          end,
+          clear = function() end,
+          clear_all = function() end,
+        }
+      end
+
+      local placement = renderer.render_block(bufnr, {
+        start_line = 0,
+        end_line = 0,
+        path = 'pics/exists.png',
+        scale = 1.0,
+        alt = '',
+      })
+
+      assert.is_not_nil(placement)
+      assert.equals(10, render_opts.max_cols)
+      assert.equals(5, render_opts.max_rows)
+
+      local ns = vim.api.nvim_create_namespace('nvpic')
+      local extmarks = vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })
+      assert.equals(1, #extmarks)
+      assert.equals(5, #extmarks[1][4].virt_lines)
+    end)
+
+    it('clamps image height when anchored at the bottom of the window', function()
+      local test_dir = vim.fn.tempname()
+      vim.fn.mkdir(test_dir .. '/pics', 'p')
+      cache.set_root(test_dir)
+      vim.fn.writefile({}, test_dir .. '/pics/bottom.png')
+      local render_opts
+      vim.fn.bufwinid = function()
+        return 12
+      end
+      vim.fn.screenpos = function()
+        return { row = 13, col = 4 }
+      end
+      vim.fn.getwininfo = function()
+        return {
+          { winrow = 10, wincol = 1 },
+        }
+      end
+      vim.api.nvim_win_get_width = function()
+        return 30
+      end
+      vim.api.nvim_win_get_height = function()
+        return 4
+      end
+      protocol.get_active = function()
+        return {
+          name = 'stub',
+          detect = function()
+            return true
+          end,
+          render = function(opts)
+            render_opts = opts
+            return '85'
+          end,
+          clear = function() end,
+          clear_all = function() end,
+        }
+      end
+
+      local placement = renderer.render_block(bufnr, {
+        start_line = 0,
+        end_line = 0,
+        path = 'pics/bottom.png',
+        scale = 1.0,
+        alt = '',
+      })
+
+      assert.is_not_nil(placement)
+      assert.equals(1, render_opts.max_rows)
+
+      local ns = vim.api.nvim_create_namespace('nvpic')
+      local extmarks = vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })
+      assert.equals(1, #extmarks[1][4].virt_lines)
+    end)
+
+    it('uses the provided window id when computing geometry', function()
+      local test_dir = vim.fn.tempname()
+      vim.fn.mkdir(test_dir .. '/pics', 'p')
+      cache.set_root(test_dir)
+      vim.fn.writefile({}, test_dir .. '/pics/window.png')
+      local render_opts
+      vim.fn.bufwinid = function()
+        return 99
+      end
+      vim.fn.screenpos = function(winid)
+        if winid == 22 then
+          return { row = 8, col = 6 }
+        end
+        return { row = 20, col = 20 }
+      end
+      vim.fn.getwininfo = function(winid)
+        if winid == 22 then
+          return {
+            { winrow = 7, wincol = 4 },
+          }
+        end
+        return {
+          { winrow = 20, wincol = 20 },
+        }
+      end
+      vim.api.nvim_win_get_width = function(winid)
+        if winid == 22 then
+          return 18
+        end
+        return 80
+      end
+      vim.api.nvim_win_get_height = function(winid)
+        if winid == 22 then
+          return 6
+        end
+        return 24
+      end
+      protocol.get_active = function()
+        return {
+          name = 'stub',
+          detect = function()
+            return true
+          end,
+          render = function(opts)
+            render_opts = opts
+            return '86'
+          end,
+          clear = function() end,
+          clear_all = function() end,
+        }
+      end
+
+      local placement = renderer.render_block(bufnr, {
+        start_line = 0,
+        end_line = 0,
+        path = 'pics/window.png',
+        scale = 1.0,
+        alt = '',
+      }, 22)
+
+      assert.is_not_nil(placement)
+      assert.equals(7, render_opts.row)
+      assert.equals(5, render_opts.col)
+      assert.equals(9, render_opts.max_cols)
+      assert.equals(4, render_opts.max_rows)
     end)
 
     it('warns when image is missing', function()
