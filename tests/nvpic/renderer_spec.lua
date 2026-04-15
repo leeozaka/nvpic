@@ -387,6 +387,80 @@ describe('nvpic.renderer', function()
       assert.equals(4, render_opts.max_rows)
     end)
 
+    it('reuses an uploaded image when the protocol supports repositioning', function()
+      local test_dir = vim.fn.tempname()
+      vim.fn.mkdir(test_dir .. '/pics', 'p')
+      cache.set_root(test_dir)
+      vim.fn.writefile({}, test_dir .. '/pics/reuse.png')
+      local screen_row = 12
+      local upload_calls = {}
+      local place_calls = {}
+      local clear_calls = {}
+      vim.fn.bufwinid = function()
+        return 31
+      end
+      vim.fn.screenpos = function()
+        return { row = screen_row, col = 6 }
+      end
+      vim.fn.getwininfo = function()
+        return {
+          { winrow = 10, wincol = 4 },
+        }
+      end
+      vim.api.nvim_win_get_width = function()
+        return 24
+      end
+      vim.api.nvim_win_get_height = function()
+        return 12
+      end
+      protocol.get_active = function()
+        return {
+          name = 'stub',
+          capabilities = function()
+            return {
+              supports_reposition = true,
+              supports_virtual_anchor = false,
+            }
+          end,
+          detect = function()
+            return true
+          end,
+          upload = function(opts)
+            table.insert(upload_calls, opts)
+            return 77
+          end,
+          place = function(opts)
+            table.insert(place_calls, opts)
+            return '77:5'
+          end,
+          render = function()
+            error('render fallback should not be used')
+          end,
+          clear = function(handle)
+            table.insert(clear_calls, handle)
+          end,
+          clear_all = function() end,
+        }
+      end
+      local block = {
+        start_line = 0,
+        end_line = 0,
+        path = 'pics/reuse.png',
+        scale = 1.0,
+        alt = '',
+      }
+
+      renderer.render_block(bufnr, block)
+      screen_row = 16
+      renderer.render_block(bufnr, block)
+
+      assert.equals(1, #upload_calls)
+      assert.equals(2, #place_calls)
+      assert.equals(0, #clear_calls)
+      assert.equals(77, place_calls[1].image_id)
+      assert.equals(77, place_calls[2].image_id)
+    end)
+
     it('warns when image is missing', function()
       cache.set_root(vim.fn.tempname())
       vim.fn.mkdir(cache.resolve('pics'), 'p')
@@ -574,6 +648,114 @@ describe('nvpic.renderer', function()
       renderer.render_all(bufnr)
       assert.equals('// %s', seen_cs)
     end)
+
+    it('renders the same block into each visible window showing the buffer', function()
+      local test_dir = vim.fn.tempname()
+      vim.fn.mkdir(test_dir .. '/pics', 'p')
+      cache.set_root(test_dir)
+      vim.fn.writefile({}, test_dir .. '/pics/two-windows.png')
+      local render_opts = {}
+      local first_win = vim.api.nvim_get_current_win()
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+        '// $$pic-start',
+        '// path: pics/two-windows.png',
+        '// $$pic-end',
+      })
+      vim.cmd('split')
+      local second_win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_buf(first_win, bufnr)
+      vim.api.nvim_win_set_buf(second_win, bufnr)
+      vim.fn.bufwinid = function()
+        return first_win
+      end
+      vim.fn.screenpos = function(winid)
+        if winid == first_win then
+          return { row = 10, col = 4 }
+        end
+        return { row = 16, col = 8 }
+      end
+      vim.fn.getwininfo = function(winid)
+        if winid == first_win then
+          return {
+            { winrow = 9, wincol = 3 },
+          }
+        end
+        return {
+          { winrow = 15, wincol = 7 },
+        }
+      end
+      vim.api.nvim_win_get_width = function()
+        return 20
+      end
+      vim.api.nvim_win_get_height = function()
+        return 10
+      end
+      protocol.get_active = function()
+        return {
+          name = 'stub',
+          detect = function()
+            return true
+          end,
+          render = function(opts)
+            table.insert(render_opts, opts)
+            return tostring(#render_opts)
+          end,
+          clear = function() end,
+          clear_all = function() end,
+        }
+      end
+
+      renderer.render_all(bufnr, first_win)
+
+      assert.equals(2, #render_opts)
+      assert.equals(9, render_opts[1].row)
+      assert.equals(15, render_opts[2].row)
+      vim.cmd('only')
+    end)
+
+    it('clears stale placements when a rendered path becomes missing', function()
+      local test_dir = vim.fn.tempname()
+      vim.fn.mkdir(test_dir .. '/pics', 'p')
+      cache.set_root(test_dir)
+      vim.fn.writefile({}, test_dir .. '/pics/here.png')
+      local cleared = {}
+      local next_id = 0
+      protocol.get_active = function()
+        return {
+          name = 'stub',
+          detect = function()
+            return true
+          end,
+          render = function()
+            next_id = next_id + 1
+            return tostring(next_id)
+          end,
+          clear = function(handle)
+            table.insert(cleared, handle)
+          end,
+          clear_all = function() end,
+        }
+      end
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+        '// $$pic-start',
+        '// path: pics/here.png',
+        '// $$pic-end',
+      })
+      vim.bo[bufnr].commentstring = '// %s'
+
+      renderer.render_all(bufnr)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+        '// $$pic-start',
+        '// path: pics/missing.png',
+        '// $$pic-end',
+      })
+      renderer.render_all(bufnr)
+
+      assert.same({ '1' }, cleared)
+      assert.equals(0, #renderer.get_placements(bufnr))
+      local diags = nvpic_diags(bufnr)
+      assert.equals('Image not found: pics/missing.png', diags[1].message)
+    end)
   end)
 
   describe('schedule_rescan', function()
@@ -606,6 +788,11 @@ describe('nvpic.renderer', function()
           clear_all = function() end,
         }
       end
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+        '// $$pic-start',
+        '// path: pics/d.png',
+        '// $$pic-end',
+      })
       renderer.render_block(bufnr, {
         start_line = 0,
         end_line = 0,
@@ -640,6 +827,146 @@ describe('nvpic.renderer', function()
         return false
       end)
       assert.equals(0, calls)
+    end)
+
+    it('re-renders with the triggering window after debounce', function()
+      config.setup({ debounce_ms = 40 })
+      local test_dir = vim.fn.tempname()
+      vim.fn.mkdir(test_dir .. '/pics', 'p')
+      cache.set_root(test_dir)
+      vim.fn.writefile({}, test_dir .. '/pics/d.png')
+      protocol.get_active = function()
+        return {
+          name = 'stub',
+          detect = function()
+            return true
+          end,
+          render = function()
+            return '1'
+          end,
+          clear = function() end,
+          clear_all = function() end,
+        }
+      end
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+        '// $$pic-start',
+        '// path: pics/d.png',
+        '// $$pic-end',
+      })
+      renderer.render_block(bufnr, {
+        start_line = 0,
+        end_line = 0,
+        path = 'pics/d.png',
+        scale = 1.0,
+        alt = '',
+      })
+      local call
+      renderer.render_all = function(b, winid)
+        call = { bufnr = b, winid = winid }
+      end
+
+      renderer.schedule_rescan(bufnr, 22)
+
+      vim.wait(400, function()
+        return call ~= nil
+      end)
+      assert.same({ bufnr = bufnr, winid = 22 }, call)
+    end)
+
+    it('clears invalidated anchors before waiting for the debounce timer', function()
+      config.setup({ debounce_ms = 200 })
+      local test_dir = vim.fn.tempname()
+      vim.fn.mkdir(test_dir .. '/pics', 'p')
+      cache.set_root(test_dir)
+      vim.fn.writefile({}, test_dir .. '/pics/d.png')
+      local cleared = {}
+      protocol.get_active = function()
+        return {
+          name = 'stub',
+          detect = function()
+            return true
+          end,
+          render = function()
+            return '1'
+          end,
+          clear = function(handle)
+            table.insert(cleared, handle)
+          end,
+          clear_all = function() end,
+        }
+      end
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+        '// $$pic-start',
+        '// path: pics/d.png',
+        '// $$pic-end',
+      })
+
+      renderer.render_all(bufnr)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {})
+      renderer.schedule_rescan(bufnr, vim.api.nvim_get_current_win())
+
+      assert.same({ '1' }, cleared)
+      assert.equals(0, #renderer.get_placements(bufnr))
+    end)
+
+    it('clears only the removed placement when duplicate blocks share the same image metadata', function()
+      config.setup({ debounce_ms = 200 })
+      local test_dir = vim.fn.tempname()
+      vim.fn.mkdir(test_dir .. '/pics', 'p')
+      cache.set_root(test_dir)
+      vim.fn.writefile({}, test_dir .. '/pics/dup.png')
+      local cleared = {}
+      local next_id = 0
+      protocol.get_active = function()
+        return {
+          name = 'stub',
+          detect = function()
+            return true
+          end,
+          render = function()
+            next_id = next_id + 1
+            return tostring(next_id)
+          end,
+          clear = function(handle)
+            table.insert(cleared, handle)
+          end,
+          clear_all = function() end,
+        }
+      end
+      vim.fn.bufwinid = function()
+        return 41
+      end
+      vim.fn.screenpos = function(_, lnum)
+        return { row = 10 + lnum, col = 4 }
+      end
+      vim.fn.getwininfo = function()
+        return {
+          { winrow = 10, wincol = 4 },
+        }
+      end
+      vim.api.nvim_win_get_width = function()
+        return 30
+      end
+      vim.api.nvim_win_get_height = function()
+        return 30
+      end
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+        '// $$pic-start',
+        '// path: pics/dup.png',
+        '// $$pic-end',
+        '',
+        '// $$pic-start',
+        '// path: pics/dup.png',
+        '// $$pic-end',
+      })
+
+      renderer.render_all(bufnr)
+      assert.equals(2, #renderer.get_placements(bufnr))
+      vim.api.nvim_buf_set_lines(bufnr, 0, 4, false, {})
+      renderer.schedule_rescan(bufnr, vim.api.nvim_get_current_win())
+
+      assert.equals(1, #cleared)
+      assert.equals(1, #renderer.get_placements(bufnr))
     end)
   end)
 end)

@@ -182,6 +182,103 @@ describe('nvpic (init)', function()
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
 
+  it('passes the triggering window to renderer.schedule_rescan on edits', function()
+    local calls = {}
+    unload_nvpic()
+    package.loaded['nvpic.renderer'] = {
+      toggle = function() end,
+      render_all = function() end,
+      clear = function() end,
+      is_active = function(bufnr)
+        return bufnr == vim.api.nvim_get_current_buf()
+      end,
+      has_blocks = function()
+        return false
+      end,
+      schedule_rescan = function(bufnr, winid)
+        table.insert(calls, { bufnr = bufnr, winid = winid })
+      end,
+    }
+    local nvpic = require('nvpic')
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buf)
+    nvpic.setup({ protocol = 'kitty' })
+    local current_win = vim.api.nvim_get_current_win()
+
+    vim.api.nvim_exec_autocmds('TextChanged', { buffer = buf })
+
+    assert.same({
+      { bufnr = buf, winid = current_win },
+    }, calls)
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it('schedules rescans when edits reintroduce pic blocks in an inactive buffer', function()
+    local calls = {}
+    unload_nvpic()
+    package.loaded['nvpic.renderer'] = {
+      toggle = function() end,
+      render_all = function() end,
+      clear = function() end,
+      is_active = function()
+        return false
+      end,
+      has_blocks = function(bufnr)
+        return bufnr == vim.api.nvim_get_current_buf()
+      end,
+      schedule_rescan = function(bufnr, winid)
+        table.insert(calls, { bufnr = bufnr, winid = winid })
+      end,
+    }
+    local nvpic = require('nvpic')
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buf)
+    nvpic.setup({ protocol = 'kitty' })
+    local current_win = vim.api.nvim_get_current_win()
+
+    vim.api.nvim_exec_autocmds('TextChanged', { buffer = buf })
+
+    assert.same({
+      { bufnr = buf, winid = current_win },
+    }, calls)
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it('does not clear a buffer that remains visible in another window', function()
+    local cleared = {}
+    unload_nvpic()
+    package.loaded['nvpic.renderer'] = {
+      toggle = function() end,
+      render_all = function() end,
+      clear = function(bufnr)
+        table.insert(cleared, bufnr)
+      end,
+      is_active = function()
+        return true
+      end,
+      has_blocks = function()
+        return false
+      end,
+      schedule_rescan = function() end,
+    }
+    local nvpic = require('nvpic')
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buf)
+    nvpic.setup({ protocol = 'kitty', auto_render = false })
+
+    local first_win = vim.api.nvim_get_current_win()
+    vim.cmd('split')
+    local second_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(first_win, buf)
+    vim.api.nvim_win_set_buf(second_win, buf)
+
+    vim.api.nvim_exec_autocmds('BufLeave', { buffer = buf })
+
+    assert.same({}, cleared)
+    vim.cmd('only')
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
   it('paste() delegates to ui.float.open', function()
     local calls = 0
     unload_nvpic()

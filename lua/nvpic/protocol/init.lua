@@ -1,8 +1,27 @@
 local M = {}
 
+---@class NvpicProtocolCapabilities
+---@field supports_reposition boolean
+---@field supports_virtual_anchor boolean
+
+---@class NvpicUploadOpts
+---@field image_path string
+---@field image_id? number
+
+---@class NvpicPlaceOpts
+---@field image_id number
+---@field placement_id? number
+---@field row number
+---@field col number
+---@field max_cols number
+---@field max_rows number
+
 ---@class NvpicProtocol
 ---@field name string
+---@field capabilities fun(): NvpicProtocolCapabilities
 ---@field detect fun(): boolean
+---@field upload fun(opts: NvpicUploadOpts): number|nil
+---@field place fun(opts: NvpicPlaceOpts): string|nil
 ---@field render fun(opts: NvpicRenderOpts): string|nil
 ---@field clear fun(placement_id: string)
 ---@field clear_all fun()

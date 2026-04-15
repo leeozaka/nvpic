@@ -26,28 +26,60 @@ local function sync_root(bufnr)
   cache.set_root(find_root(bufnr))
 end
 
-local function refresh_visible_active_buffers()
-  local ordered_wins = {}
-  local current_win = vim.api.nvim_get_current_win()
-  if vim.api.nvim_win_is_valid(current_win) then
-    table.insert(ordered_wins, current_win)
-  end
+---@param bufnr number
+---@return boolean
+local function buffer_is_visible(bufnr)
   for _, winid in ipairs(vim.api.nvim_list_wins()) do
-    if winid ~= current_win then
-      table.insert(ordered_wins, winid)
+    if vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_buf(winid) == bufnr then
+      return true
     end
   end
+  return false
+end
 
+---@return integer[]
+local function scrolled_windows()
+  local wins = {}
   local seen = {}
-  for _, winid in ipairs(ordered_wins) do
-    if vim.api.nvim_win_is_valid(winid) then
-      local bufnr = vim.api.nvim_win_get_buf(winid)
-      if not seen[bufnr] and renderer.is_active(bufnr) then
-        seen[bufnr] = true
-        sync_root(bufnr)
-        renderer.render_all(bufnr, winid)
+  for key, _ in pairs(vim.v.event or {}) do
+    if key ~= 'all' then
+      local winid = tonumber(key)
+      if winid and not seen[winid] then
+        seen[winid] = true
+        table.insert(wins, winid)
       end
     end
+  end
+  return wins
+end
+
+---@param preferred_wins? integer[]
+local function refresh_visible_active_buffers(preferred_wins)
+  local ordered = {}
+  local seen = {}
+
+  local function add(winid)
+    if not winid or not vim.api.nvim_win_is_valid(winid) then
+      return
+    end
+    local bufnr = vim.api.nvim_win_get_buf(winid)
+    if seen[bufnr] or not renderer.is_active(bufnr) then
+      return
+    end
+    seen[bufnr] = true
+    table.insert(ordered, { bufnr = bufnr, winid = winid })
+  end
+
+  for _, winid in ipairs(preferred_wins or {}) do
+    add(winid)
+  end
+  for _, winid in ipairs(vim.api.nvim_list_wins()) do
+    add(winid)
+  end
+
+  for _, item in ipairs(ordered) do
+    sync_root(item.bufnr)
+    renderer.render_all(item.bufnr, item.winid)
   end
 end
 
@@ -97,25 +129,49 @@ function M.setup(opts)
       group = augroup,
       callback = function(ev)
         sync_root(ev.buf)
-        renderer.render_all(ev.buf, vim.api.nvim_get_current_win())
+        local winid = vim.api.nvim_get_current_win()
+        if not vim.api.nvim_win_is_valid(winid) or vim.api.nvim_win_get_buf(winid) ~= ev.buf then
+          winid = nil
+        end
+        renderer.render_all(ev.buf, winid)
       end,
       desc = 'nvpic: auto-render images',
     })
   end
 
-  vim.api.nvim_create_autocmd({ 'BufLeave', 'BufDelete' }, {
+  vim.api.nvim_create_autocmd('BufLeave', {
+    group = augroup,
+    callback = function(ev)
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(ev.buf) and not buffer_is_visible(ev.buf) then
+          renderer.clear(ev.buf)
+        end
+      end)
+    end,
+    desc = 'nvpic: clear images on leave',
+  })
+
+  vim.api.nvim_create_autocmd('BufDelete', {
     group = augroup,
     callback = function(ev)
       renderer.clear(ev.buf)
     end,
-    desc = 'nvpic: clear images on leave',
+    desc = 'nvpic: clear images on delete',
   })
 
   vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
     group = augroup,
     callback = function(ev)
-      if renderer.is_active(ev.buf) then
-        renderer.schedule_rescan(ev.buf)
+      local should_rescan = renderer.is_active(ev.buf)
+      if not should_rescan and type(renderer.has_blocks) == 'function' then
+        should_rescan = renderer.has_blocks(ev.buf)
+      end
+      if should_rescan then
+        local winid = vim.api.nvim_get_current_win()
+        if not vim.api.nvim_win_is_valid(winid) or vim.api.nvim_win_get_buf(winid) ~= ev.buf then
+          winid = nil
+        end
+        renderer.schedule_rescan(ev.buf, winid)
       end
     end,
     desc = 'nvpic: debounced re-scan on edit',
@@ -124,9 +180,23 @@ function M.setup(opts)
   vim.api.nvim_create_autocmd({ 'VimResized', 'WinResized', 'WinScrolled' }, {
     group = augroup,
     callback = function()
-      refresh_visible_active_buffers()
+      local wins = scrolled_windows()
+      refresh_visible_active_buffers(#wins > 0 and wins or nil)
     end,
     desc = 'nvpic: refresh images on window changes',
+  })
+
+  vim.api.nvim_create_autocmd('OptionSet', {
+    group = augroup,
+    pattern = { 'wrap', 'number', 'relativenumber', 'signcolumn', 'foldcolumn' },
+    callback = function()
+      local bufnr = vim.api.nvim_get_current_buf()
+      if renderer.is_active(bufnr) then
+        sync_root(bufnr)
+        renderer.render_all(bufnr, vim.api.nvim_get_current_win())
+      end
+    end,
+    desc = 'nvpic: refresh images on layout option changes',
   })
 
   if cfg.telescope then
