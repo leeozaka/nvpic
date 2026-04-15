@@ -195,11 +195,74 @@ describe('nvpic.renderer', function()
       assert.is_not_nil(placement)
       assert.equals(10, render_opts.max_cols)
       assert.equals(5, render_opts.max_rows)
+      assert.equals(1, #placement.hidden_extmark_ids)
 
       local ns = vim.api.nvim_create_namespace('nvpic')
-      local extmarks = vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })
-      assert.equals(1, #extmarks)
-      assert.equals(5, #extmarks[1][4].virt_lines)
+      local extmark = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, placement.extmark_id, { details = true })
+      assert.equals(4, #extmark[3].virt_lines)
+    end)
+
+    it('anchors the image at the marker start and only adds extra spacer lines', function()
+      local test_dir = vim.fn.tempname()
+      vim.fn.mkdir(test_dir .. '/pics', 'p')
+      cache.set_root(test_dir)
+      vim.fn.writefile({}, test_dir .. '/pics/replace.png')
+      local render_opts
+      vim.fn.bufwinid = function()
+        return 14
+      end
+      vim.fn.screenpos = function(_, lnum)
+        return { row = lnum + 10, col = 4 }
+      end
+      vim.fn.getwininfo = function()
+        return {
+          { winrow = 10, wincol = 4 },
+        }
+      end
+      vim.api.nvim_win_get_width = function()
+        return 20
+      end
+      vim.api.nvim_win_get_height = function()
+        return 12
+      end
+      protocol.get_active = function()
+        return {
+          name = 'stub',
+          detect = function()
+            return true
+          end,
+          render = function(opts)
+            render_opts = opts
+            return '87'
+          end,
+          clear = function() end,
+          clear_all = function() end,
+        }
+      end
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+        '// $$pic-start',
+        '// path: pics/replace.png',
+        '// note',
+        '// $$pic-end',
+        'after',
+      })
+
+      local placement = renderer.render_block(bufnr, {
+        start_line = 1,
+        end_line = 3,
+        path = 'pics/replace.png',
+        scale = 1.0,
+        alt = '',
+      })
+
+      assert.is_not_nil(placement)
+      assert.equals(11, render_opts.row)
+      assert.equals(3, #placement.hidden_extmark_ids)
+
+      local ns = vim.api.nvim_create_namespace('nvpic')
+      local extmark = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, placement.extmark_id, { details = true })
+      assert.is_not_nil(extmark)
+      assert.equals(3, #extmark[3].virt_lines)
     end)
 
     it('clamps image height when anchored at the bottom of the window', function()
@@ -250,10 +313,11 @@ describe('nvpic.renderer', function()
 
       assert.is_not_nil(placement)
       assert.equals(1, render_opts.max_rows)
+      assert.equals(1, #placement.hidden_extmark_ids)
 
       local ns = vim.api.nvim_create_namespace('nvpic')
-      local extmarks = vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })
-      assert.equals(1, #extmarks[1][4].virt_lines)
+      local extmark = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, placement.extmark_id, { details = true })
+      assert.is_nil(extmark[3].virt_lines)
     end)
 
     it('uses the provided window id when computing geometry', function()
@@ -408,18 +472,26 @@ describe('nvpic.renderer', function()
           clear_all = function() end,
         }
       end
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+        '// $$pic-start',
+        '// path: pics/here.png',
+        '// $$pic-end',
+      })
       renderer.render_block(bufnr, {
         start_line = 0,
-        end_line = 0,
+        end_line = 2,
         path = 'pics/here.png',
         scale = 1.0,
         alt = '',
       })
       assert.is_true(renderer.is_active(bufnr))
+      local ns = vim.api.nvim_create_namespace('nvpic')
+      assert.is_true(#vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, {}) > 0)
       renderer.clear(bufnr)
       assert.is_false(renderer.is_active(bufnr))
       assert.equals(0, #renderer.get_placements(bufnr))
       assert.same({ '99' }, cleared)
+      assert.equals(0, #vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, {}))
     end)
   end)
 

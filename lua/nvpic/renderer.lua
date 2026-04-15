@@ -10,6 +10,7 @@ local ns = vim.api.nvim_create_namespace('nvpic')
 
 ---@class Placement
 ---@field extmark_id number
+---@field hidden_extmark_ids number[]
 ---@field placement_id string
 ---@field block PicBlock
 
@@ -87,7 +88,7 @@ local function get_window_geometry(bufnr, block, winid)
     return nil
   end
 
-  local screen = vim.fn.screenpos(winid, block.end_line + 1, 1)
+  local screen = vim.fn.screenpos(winid, block.start_line + 1, 1)
   local row = tonumber(screen.row) or 0
   local col = tonumber(screen.col) or 0
   if row < 1 or col < 1 then
@@ -125,13 +126,37 @@ end
 ---@param geometry { available_cols: number, available_rows: number }
 ---@return number, number
 local function get_render_size(block, geometry)
+  local block_rows = (block.end_line - block.start_line) + 1
   local max_cols = math.floor(geometry.available_cols * 0.6)
   local max_rows = math.floor(max_cols / 2)
   local cols = math.floor(max_cols * block.scale)
   local rows = math.floor(max_rows * block.scale)
   cols = math.max(math.min(cols, geometry.available_cols), 1)
+  rows = math.max(rows, block_rows)
   rows = math.max(math.min(rows, geometry.available_rows), 1)
   return cols, rows
+end
+
+---@param bufnr number
+---@param block PicBlock
+---@return number[]
+local function hide_block_lines(bufnr, block)
+  local hidden_extmark_ids = {}
+  local lines = vim.api.nvim_buf_get_lines(bufnr, block.start_line, block.end_line + 1, false)
+
+  for offset, line in ipairs(lines) do
+    local lnum = block.start_line + offset - 1
+    local hidden_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, ns, lnum, 0, {
+      end_row = lnum,
+      end_col = #line,
+      hl_group = 'Ignore',
+      hl_eol = true,
+      invalidate = true,
+    })
+    table.insert(hidden_extmark_ids, hidden_extmark_id)
+  end
+
+  return hidden_extmark_ids
 end
 
 ---@param bufnr number
@@ -187,7 +212,9 @@ function M.render_block(bufnr, block, winid)
     return nil
   end
 
-  local spacers = M.make_spacer_lines(rows)
+  local hidden_extmark_ids = hide_block_lines(bufnr, block)
+  local block_rows = (block.end_line - block.start_line) + 1
+  local spacers = M.make_spacer_lines(math.max(rows - block_rows, 0))
   local extmark_id = vim.api.nvim_buf_set_extmark(bufnr, ns, block.end_line, 0, {
     virt_lines = spacers,
     virt_lines_above = false,
@@ -196,6 +223,7 @@ function M.render_block(bufnr, block, winid)
 
   local placement = {
     extmark_id = extmark_id,
+    hidden_extmark_ids = hidden_extmark_ids,
     placement_id = placement_id,
     block = block,
   }
@@ -246,6 +274,9 @@ function M.clear(bufnr)
       proto.clear(p.placement_id)
     end
     pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, p.extmark_id)
+    for _, extmark_id in ipairs(p.hidden_extmark_ids or {}) do
+      pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, extmark_id)
+    end
   end
 
   buf_placements[bufnr] = {}

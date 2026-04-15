@@ -22,7 +22,7 @@ end
 function M.build_render_escape(opts)
   local payload = b64(opts.image_path)
   local control = string.format(
-    'a=T,f=100,t=f,i=%d,c=%d,r=%d,z=-1',
+    'a=T,q=1,f=100,t=f,i=%d,c=%d,r=%d,z=-1',
     opts.id,
     opts.cols,
     opts.rows
@@ -33,12 +33,12 @@ end
 ---@param id number
 ---@return string
 function M.build_clear_escape(id)
-  return APC_START .. string.format('a=d,d=i,i=%d', id) .. APC_END
+  return APC_START .. string.format('a=d,q=1,d=i,i=%d', id) .. APC_END
 end
 
 ---@return string
 function M.build_clear_all_escape()
-  return APC_START .. 'a=d,d=a' .. APC_END
+  return APC_START .. 'a=d,q=1,d=a' .. APC_END
 end
 
 ---@return string
